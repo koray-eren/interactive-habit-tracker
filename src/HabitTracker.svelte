@@ -1,5 +1,5 @@
 <script lang="ts">
-	import {debugLog, pluralize, renderPrettyDate} from './utils'
+	import {debugLog, pluralize, renderPrettyDate, matchesGroupFilter as matchesGroupFilterPure, compareHabits} from './utils'
 	import {
 		createDailyNote,
 		getDailyNote,
@@ -29,6 +29,8 @@
 		daysToShow: number
 		debug: boolean
 		matchLineLength: boolean
+		group?: string | string[]
+		excludeGroup?: string | string[]
 	}
 
 	interface HabitData {
@@ -77,6 +79,8 @@
 		color: string
 		showStreaks: boolean
 		gapStyle: string
+		group: string | string[]
+		excludeGroup: string | string[]
 	}>
 
 	// Default settings - use global settings as defaults
@@ -134,6 +138,8 @@
 				userSettings.debug !== undefined
 					? userSettings.debug
 					: state.settings.debug,
+			group: userSettings.group,
+			excludeGroup: userSettings.excludeGroup,
 		}
 
 		// Apply smart firstDisplayedDate logic
@@ -269,6 +275,12 @@
 		await app.workspace.getLeaf(false).openFile(note)
 	}
 
+	const matchesGroupFilter = function (file: TFile, groupFilter: string | string[] | undefined, excludeFilter: string | string[] | undefined): boolean {
+		const cache = app.metadataCache.getFileCache(file)
+		const habitGroup = cache?.frontmatter?.group
+		return matchesGroupFilterPure(habitGroup, groupFilter, excludeFilter)
+	}
+
 	const getHabits = function (path: string): HabitData[] {
 		debugLog(`Loading habits`, state.settings.debug)
 		state.ui.habitSource = app.vault.getAbstractFileByPath(path)
@@ -284,16 +296,22 @@
 				undefined,
 				pluginName,
 			)
-			// Sort files alphabetically by name
-			const sortedFiles = filesOnly.sort((a, b) =>
-				a.basename.localeCompare(b.basename),
-			)
-			return sortedFiles as HabitData[]
+			// Sort files by optional frontmatter `order` field, then alphabetically
+			const filesWithOrder = filesOnly.map((file: TFile) => {
+				const cache = app.metadataCache.getFileCache(file)
+				const order = cache?.frontmatter?.order
+				return {file, order}
+			})
+			const sortedFiles = filesWithOrder.sort(compareHabits)
+			return sortedFiles
+				.map(({file}: {file: TFile}) => file)
+				.filter((file: TFile) => matchesGroupFilter(file, state.settings.group, state.settings.excludeGroup)) as unknown as HabitData[]
 		}
 
 		if (state.ui.habitSource && state.ui.habitSource instanceof TFile) {
 			debugLog(`${path} points to a file`, state.settings.debug)
-			return [state.ui.habitSource as HabitData]
+			const file = state.ui.habitSource as TFile
+			return matchesGroupFilter(file, state.settings.group, state.settings.excludeGroup) ? [file as unknown as HabitData] : []
 		}
 
 		state.ui.habitSource = app.vault.getAbstractFileByPath(`${path}.md`)
@@ -304,7 +322,8 @@
 				undefined,
 				pluginName,
 			)
-			return [state.ui.habitSource as HabitData]
+			const file = state.ui.habitSource as TFile
+			return matchesGroupFilter(file, state.settings.group, state.settings.excludeGroup) ? [file as unknown as HabitData] : []
 		}
 
 		debugLog(`${path} is not found`, state.settings.debug)
